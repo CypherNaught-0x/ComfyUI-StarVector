@@ -59,7 +59,8 @@ class StarVectorModelLoader:
     CATEGORY = "StarVector"
     
     def load_model(self, model_name, device, dtype):
-        from transformers import AutoModelForCausalLM, AutoConfig
+        from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
+        import json
 
         # Determine device
         if device == "auto":
@@ -85,42 +86,85 @@ class StarVectorModelLoader:
         print(f"[StarVector] Device: {device}, dtype: {dtype}")
 
         # Check if model already exists locally
-        model_exists = os.path.exists(os.path.join(local_dir, "config.json"))
+        config_path = os.path.join(local_dir, "config.json")
+        model_exists = os.path.exists(config_path)
 
-        # Load the model with local_dir instead of cache_dir
-        # This downloads all files to the specified directory
+        # Save current environment variables
+        old_offline = os.environ.get('HF_HUB_OFFLINE')
+        old_transformers_offline = os.environ.get('TRANSFORMERS_OFFLINE')
+
         try:
             if model_exists:
                 # Load from local directory
                 print(f"[StarVector] Loading from local directory...")
+
+                # Set offline mode to prevent any network access
+                os.environ['HF_HUB_OFFLINE'] = '1'
+                os.environ['TRANSFORMERS_OFFLINE'] = '1'
+
+                # Load config
+                config = AutoConfig.from_pretrained(
+                    local_dir,
+                    trust_remote_code=True,
+                    local_files_only=True,
+                )
+
+                # Pass parent model directory to starvector via kwargs
+                print(f"[StarVector] Loading model with parent_model_dir={local_dir}")
+
                 model = AutoModelForCausalLM.from_pretrained(
                     local_dir,
+                    config=config,
                     torch_dtype=torch_dtype,
                     trust_remote_code=True,
                     local_files_only=True,
+                    parent_model_dir=local_dir,  # Pass to starvector model (no underscore)
                 )
             else:
                 # Download to local directory
                 print(f"[StarVector] Downloading model to local directory...")
+                print(f"[StarVector] Note: This will download the model and tokenizer...")
+
+                # Ensure we're online for download
+                if 'HF_HUB_OFFLINE' in os.environ:
+                    del os.environ['HF_HUB_OFFLINE']
+                if 'TRANSFORMERS_OFFLINE' in os.environ:
+                    del os.environ['TRANSFORMERS_OFFLINE']
+
+                # Download the model with parent directory info
+                print(f"[StarVector] Downloading with parent_model_dir={local_dir}")
                 model = AutoModelForCausalLM.from_pretrained(
                     hf_model_path,
                     torch_dtype=torch_dtype,
                     trust_remote_code=True,
                     local_dir=local_dir,
                     local_dir_use_symlinks=False,
+                    parent_model_dir=local_dir,  # Pass to starvector model (no underscore)
                 )
+
         except Exception as e:
             print(f"[StarVector] Error loading model: {e}")
-            print(f"[StarVector] Attempting alternative loading method...")
-            # Fallback: try loading without local_files_only or with different config handling
-            model = AutoModelForCausalLM.from_pretrained(
-                hf_model_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=True,
-                local_dir=local_dir,
-                local_dir_use_symlinks=False,
-                force_download=False,
+            print(f"[StarVector] Full error details:")
+            import traceback
+            traceback.print_exc()
+
+            raise RuntimeError(
+                f"Failed to load StarVector model. "
+                f"Error: {e}\n\n"
+                f"Please ensure the model files are fully downloaded to: {local_dir}\n"
+                f"The model requires local tokenizer files to avoid accessing the gated bigcode repository."
             )
+        finally:
+            # Restore original environment variables
+            if old_offline is not None:
+                os.environ['HF_HUB_OFFLINE'] = old_offline
+            elif 'HF_HUB_OFFLINE' in os.environ:
+                del os.environ['HF_HUB_OFFLINE']
+
+            if old_transformers_offline is not None:
+                os.environ['TRANSFORMERS_OFFLINE'] = old_transformers_offline
+            elif 'TRANSFORMERS_OFFLINE' in os.environ:
+                del os.environ['TRANSFORMERS_OFFLINE']
         
         # Move to device and set to eval mode
         model.to(device)
@@ -184,10 +228,14 @@ class StarVectorImage2SVG:
         # Process the image
         processed = processor(image_pil, return_tensors="pt")
         pixel_values = processed['pixel_values'].to(device)
-        
-        if not pixel_values.shape[0] == 1:
-            pixel_values = pixel_values.squeeze(0)
-        
+
+        # Ensure we have batch dimension: [batch, channels, height, width]
+        if pixel_values.dim() == 3:
+            # Missing batch dimension, add it
+            pixel_values = pixel_values.unsqueeze(0)
+
+        print(f"[StarVector] Processed image shape: {pixel_values.shape}")
+
         batch = {"image": pixel_values}
         
         # Generate SVG
