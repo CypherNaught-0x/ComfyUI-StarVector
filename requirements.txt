@@ -1,0 +1,13 @@
+# Core dependencies
+transformers>=4.36.0
+Pillow>=9.0.0
+
+# StarVector model support
+starvector @ git+https://github.com/CypherNaught-0x/star-vector-comfyui.git
+
+# SVG rasterization (at least one recommended)
+cairosvg>=2.7.0
+
+# Alternative SVG rasterization options (optional)
+# svglib>=1.5.0
+# reportlab>=4.0.0
